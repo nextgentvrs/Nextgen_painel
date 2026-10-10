@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NextGen TV - Painel Master & Clientes</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- SDKs do Firebase (Modular v10) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, getDocs, deleteDoc, doc, setDoc, getDoc, updateDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBrp9JlMd9zBUqzByPRBLCStLiLbH5z80Y",
+            authDomain: "nextgentv.firebaseapp.com",
+            projectId: "nextgentv",
+            storageBucket: "nextgentv.firebasestorage.app",
+            messagingSenderId: "999074190973",
+            appId: "1:999074190973:web:967de16614c5274a760314"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        let imagemBase64Atual = "";
+        const SERVIDOR_FIXO = "http://plus.lat";
+
+        // ================= CLIENTES =================
+        async function carregarClientes() {
+            const tabelaClientes = document.getElementById('tabelaClientesCorpo');
+            const totalClientes = document.getElementById('totalClientes');
+            if (tabelaClientes) tabelaClientes.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-zinc-500">A carregar clientes...</td></tr>';
+
+            try {
+                const querySnapshot = await getDocs(collection(db, "clientes"));
+                if (tabelaClientes) tabelaClientes.innerHTML = '';
+                let contador = 0;
+
+                querySnapshot.forEach((documento) => {
+                    contador++;
+                    const dados = documento.data();
+                    const whatsappKey = documento.id;
+                    const telLimpo = whatsappKey.replace(/\D/g, '');
+
+                    let statusHtml = "";
+                    let diffDiasGlobal = 999;
+
+                    if (dados.dataCadastro && dados.diasValidade !== undefined) {
+                        const dataCadastro = new Date(dados.dataCadastro);
+                        const msValidade = dados.diasValidade * 24 * 60 * 60 * 1000;
+                        const dataVencimento = new Date(dataCadastro.getTime() + msValidade);
+                        const agora = new Date();
+                        const diffMs = dataVencimento - agora;
+                        const diffHoras = Math.floor(diffMs / (1000 * 60 * 60));
+                        diffDiasGlobal = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+                        if (diffMs > 0) {
+                            if (diffDiasGlobal >= 1) {
+                                statusHtml = `<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">⏳ ${diffDiasGlobal} dias</span>`;
+                            } else {
+                                statusHtml = `<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30">⏳ ${diffHoras} horas</span>`;
+                            }
+                        } else {
+                            statusHtml = `<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-red-500/20 text-red-400 border border-red-500/30">❌ Expirado</span>`;
+                        }
+                    } else {
+                        statusHtml = `<span class="text-xs text-zinc-500">-</span>`;
+                    }
+
+                    const tr = document.createElement('tr');
+                    tr.className = "border-b border-zinc-900 hover:bg-zinc-900/55 transition align-middle";
+                    
+                    tr.innerHTML = `
+                        <td class="px-6 py-4 font-medium text-white">${dados.nome || 'N/D'}</td>
+                        <td class="px-6 py-4 text-zinc-300 font-mono">${whatsappKey}</td>
+                        <td class="px-6 py-4 text-zinc-300 font-mono text-xs">
+                            <span class="text-blue-400">U:</span> ${dados.usuario || '-'}<br>
+                            <span class="text-blue-400">S:</span> ${dados.senha || '-'}
+                        </td>
+                        <td class="px-6 py-4 text-blue-400 font-semibold text-xs">${dados.nomePlano || 'Personalizado'}</td>
+                        <td class="px-6 py-4">${statusHtml}</td>
+                        <td class="px-6 py-4 text-right space-x-1 space-y-1" id="acoes-${telLimpo}"></td>
+                    `;
+
+                    if (tabelaClientes) tabelaClientes.appendChild(tr);
+
+                    const acoesTd = document.getElementById(`acoes-${telLimpo}`);
+                    if (acoesTd) {
+                        // Botão WhatsApp
+                        const bZap = document.createElement('button');
+                        bZap.className = 'bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-600/30 px-2 py-1.5 rounded-lg text-xs font-semibold transition';
+                        bZap.textContent = '💬 Wpp';
+                        bZap.title = 'Enviar Cobrança / Acesso no WhatsApp';
+                        bZap.onclick = () => window.enviarMensagemRenovacao(dados.nome || 'Cliente', diffDiasGlobal, telLimpo, dados);
+                        acoesTd.append(bZap);
+
+                        // Botão Interno (App)
+                        const bInterno = document.createElement('button');
+                        bInterno.className = 'bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-600/30 px-2 py-1.5 rounded-lg text-xs font-semibold transition';
+                        bInterno.textContent = '📱 App';
+                        bInterno.title = 'Enviar mensagem direta para o App deste cliente';
+                        bInterno.onclick = () => window.abrirModalMensagemIndividual(whatsappKey, dados.nome || '');
+                        acoesTd.append(bInterno);
+
+                        // Botão Editar
+                        const bEdit = document.createElement('button');
+                        bEdit.className = 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 px-2 py-1.5 rounded-lg text-xs font-semibold transition';
+                        bEdit.textContent = 'Editar';
+                        bEdit.onclick = () => window.abrirModalEditar(whatsappKey, dados);
+                        acoesTd.append(bEdit);
+
+                        // Botão Excluir
+                        const bDel = document.createElement('button');
+                        bDel.className = 'bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white border border-red-600/30 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition';
+                        bDel.textContent = 'Excluir';
+                        bDel.onclick = () => window.excluirCliente(whatsappKey, dados.nome || '');
+                        acoesTd.append(bDel);
+                    }
+                });
+
+                if (totalClientes) totalClientes.innerText = `${contador} clientes`;
+
+                if (contador === 0 && tabelaClientes) {
+                    tabelaClientes.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-zinc-500">Nenhum cliente cadastrado.</td></tr>';
+                }
+
+            } catch (error) {
+                console.error("Erro ao carregar clientes: ", error);
+                if (tabelaClientes) tabelaClientes.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-red-500">Erro ao carregar os clientes do Firebase.</td></tr>';
+            }
+        }
+
+        window.enviarMensagemRenovacao = (nomeCliente, diasRestantes, telefoneCliente, dados) => {
+            let textoMsg = "";
+            if (diasRestantes <= 5 && diasRestantes > 0) {
+                textoMsg = `Olá ${nomeCliente}, seu plano na *NextGen TV* irá expirar em *${diasRestantes} dia(s)*. Renove agora mesmo para garantir sua continuidade! 📺✨`;
+            } else if (diasRestantes <= 0) {
+                textoMsg = `Olá ${nomeCliente}, seu plano na *NextGen TV* expirou! Renove agora mesmo para continuar aproveitando todos os canais, filmes e séries sem interrupções. 🚀`;
+            } else {
+                // Se o plano está ok, envia os dados de acesso completos
+                textoMsg = `Olá ${nomeCliente}! Seguem seus dados de acesso da *NextGen TV*:\n\n` +
+                    `👤 *Usuário:* ${dados.usuario || '-'}\n` +
+                    `🔑 *Senha:* ${dados.senha || '-'}\n` +
+                    `🌐 *Servidor:* ${SERVIDOR_FIXO}\n\n` +
+                    `Qualquer dúvida estamos à disposição! 🚀`;
+            }
+
+            const urlWpp = `https://api.whatsapp.com/send?phone=55${telefoneCliente}&text=${encodeURIComponent(textoMsg)}`;
+            window.open(urlWpp, '_blank');
+        };
+
+        window.salvarNovoCliente = async () => {
+            const nome = document.getElementById('novoNomeCliente').value.trim();
+            const whatsapp = document.getElementById('novoZapCliente').value.trim().replace(/\D/g, '');
+            const usuario = document.getElementById('novoUsuarioCliente').value.trim();
+            const senha = document.getElementById('novoSenhaCliente').value.trim();
+            const selectPlano = document.getElementById('novoPlanoCliente');
+            const planoValor = selectPlano.value; 
+
+            if (!nome || !whatsapp) {
+                alert("Preencha pelo menos o Nome e o WhatsApp do cliente.");
+                return;
+            }
+
+            const partes = planoValor.split('|');
+            const diasValidade = parseFloat(partes[0]);
+            const nomePlano = partes[1];
+
+            try {
+                await setDoc(doc(db, "clientes", whatsapp), {
+                    nome: nome,
+                    telefone: whatsapp,
+                    usuario: usuario || "",
+                    senha: senha || "",
+                    diasValidade: diasValidade,
+                    nomePlano: nomePlano,
+                    dataCadastro: new Date().toISOString()
+                });
+
+                alert("Cliente cadastrado com sucesso!");
+                document.getElementById('novoNomeCliente').value = '';
+                document.getElementById('novoZapCliente').value = '';
+                document.getElementById('novoUsuarioCliente').value = '';
+                document.getElementById('novoSenhaCliente').value = '';
+                carregarClientes();
+            } catch (error) {
+                console.error("Erro ao salvar cliente:", error);
+                alert("Erro ao cadastrar cliente.");
+            }
+        };
+
+        // ================= MENSAGEM INDIVIDUAL INTERNA (PARA O APP DO CLIENTE) =================
+        let clienteZapAtualMsg = "";
+        window.abrirModalMensagemIndividual = (whatsappKey, nomeCliente) => {
+            clienteZapAtualMsg = whatsappKey;
+            document.getElementById('tituloMsgIndividual').innerText = `Enviar Mensagem Interna para: ${nomeCliente}`;
+            document.getElementById('inputTextoIndividual').value = "";
+            document.getElementById('modalMensagemIndividual').classList.remove('hidden');
+        };
+
+        window.fecharModalMensagemIndividual = () => {
+            document.getElementById('modalMensagemIndividual').classList.add('hidden');
+        };
+
+        window.enviarMensagemIndividualApp = async () => {
+            const texto = document.getElementById('inputTextoIndividual').value.trim();
+            if (!texto) {
+                alert("Digite uma mensagem!");
+                return;
+            }
+
+            try {
+                // Salvamos na subcoleção de mensagens do cliente específico no Firestore
+                await addDoc(collection(db, "clientes", clienteZapAtualMsg, "mensagens_app"), {
+                    titulo: "Mensagem do Suporte",
+                    mensagem: texto,
+                    data: new Date().toISOString(),
+                    lida: false
+                });
+
+                alert("Mensagem enviada com sucesso para o app do cliente!");
+                fecharModalMensagemIndividual();
+            } catch (e) {
+                console.error("Erro ao enviar mensagem interna:", e);
+                alert("Erro ao enviar mensagem.");
+            }
+        };
+
+        // ================= MENSAGEM GERAL GLOBAL =================
+        window.enviarParaPlayer = async () => {
+            const titulo = document.getElementById('tituloPlayerInput').value.trim();
+            const mensagem = document.getElementById('mensagemPlayerInput').value.trim();
+            if (!mensagem) { alert("Escreva uma mensagem antes de enviar!"); return; }
+            try {
+                await setDoc(doc(db, "configuracoes", "aviso_player"), {
+                    titulo: titulo || "Aviso Importante",
+                    mensagem: mensagem,
+                    imagem: imagemBase64Atual || "",
+                    ativo: true,
+                    atualizadoEm: new Date().toISOString()
+                });
+                alert("Mensagem geral disparada com sucesso para todos os apps!");
+            } catch (error) {
+                console.error("Erro ao salvar:", error);
+            }
+        };
+
+        window.desativarNoPlayer = async () => {
+            try {
+                await setDoc(doc(db, "configuracoes", "aviso_player"), { ativo: false }, { merge: true });
+                alert("Mensagem geral desativada!");
+            } catch (error) { console.error(error); }
+        };
+
+        // ================= EDIÇÃO E EXCLUSÃO =================
+        window.abrirModalEditar = (whatsappKey, dados) => {
+            document.getElementById('editWhatsappOriginal').value = whatsappKey;
+            document.getElementById('editNomeCliente').value = dados.nome || '';
+            document.getElementById('editZapCliente').value = dados.telefone || whatsappKey;
+            document.getElementById('editUsuarioCliente').value = dados.usuario || '';
+            document.getElementById('editSenhaCliente').value = dados.senha || '';
+            document.getElementById('editPlanoCliente').value = dados.diasValidade ? `${dados.diasValidade}|${dados.nomePlano || 'Personalizado'}` : '30|30 Dias (Mensal)';
+            
+            document.getElementById('modalEditarCliente').classList.remove('hidden');
+        };
+
+        window.fecharModalEditar = () => {
+            document.getElementById('modalEditarCliente').classList.add('hidden');
+        };
+
+        window.salvarEdicaoCliente = async () => {
+            const whatsappOriginal = document.getElementById('editWhatsappOriginal').value;
+            const nome = document.getElementById('editNomeCliente').value.trim();
+            const novoZap = document.getElementById('editZapCliente').value.trim().replace(/\D/g, '');
+            const usuario = document.getElementById('editUsuarioCliente').value.trim();
+            const senha = document.getElementById('editSenhaCliente').value.trim();
+            const planoValor = document.getElementById('editPlanoCliente').value;
+
+            if (!nome || !novoZap) {
+                alert("Nome e WhatsApp são obrigatórios.");
+                return;
+            }
+
+            const partes = planoValor.split('|');
+            const diasValidade = parseFloat(partes[0]);
+            const nomePlano = partes[1];
+
+            try {
+                if (whatsappOriginal !== novoZap) {
+                    await setDoc(doc(db, "clientes", novoZap), {
+                        nome: nome,
+                        telefone: novoZap,
+                        usuario: usuario || "",
+                        senha: senha || "",
+                        diasValidade: diasValidade,
+                        nomePlano: nomePlano,
+                        dataCadastro: new Date().toISOString()
+                    });
+                    await deleteDoc(doc(db, "clientes", whatsappOriginal));
+                } else {
+                    await updateDoc(doc(db, "clientes", whatsappOriginal), {
+                        nome: nome,
+                        telefone: novoZap,
+                        usuario: usuario || "",
+                        senha: senha || "",
+                        diasValidade: diasValidade,
+                        nomePlano: nomePlano
+                    });
+                }
+
+                alert("Cliente atualizado com sucesso!");
+                fecharModalEditar();
+                carregarClientes();
+            } catch (error) {
+                console.error("Erro ao atualizar cliente:", error);
+                alert("Erro ao atualizar os dados do cliente.");
+            }
+        };
+
+        window.excluirCliente = async (whatsappKey, nomeCliente) => {
+            if (confirm(`Deseja excluir o cliente "${nomeCliente}" (WhatsApp: ${whatsappKey})?`)) {
+                try {
+                    await deleteDoc(doc(db, "clientes", whatsappKey));
+                    alert("Cliente excluído com sucesso!");
+                    carregarClientes();
+                } catch (error) {
+                    console.error("Erro ao excluir:", error);
+                    alert("Não foi possível excluir o cliente.");
+                }
+            }
+        };
+
+        // ================= PEDIDOS E ORÇAMENTOS =================
+        async function carregarPedidosOrcamentos() {
+            const tabelaPedidos = document.getElementById('tabelaPedidosCorpo');
+            const totalPedidos = document.getElementById('totalPedidos');
+            if (tabelaPedidos) tabelaPedidos.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-zinc-500">A carregar pedidos...</td></tr>';
+
+            try {
+                const querySnapshot = await getDocs(collection(db, "projetos_clientes"));
+                if (tabelaPedidos) tabelaPedidos.innerHTML = '';
+                let contador = 0;
+
+                querySnapshot.forEach((documento) => {
+                    contador++;
+                    const dados = documento.data();
+                    const idDoc = documento.id;
+                    const dataCriacao = dados.criadoEm && dados.criadoEm.toDate ? dados.criadoEm.toDate().toLocaleString('pt-BR') : 'Recente';
+
+                    let coresHtml = "Padrão";
+                    if (dados.cores) {
+                        coresHtml = Object.entries(dados.cores).map(([k, v]) => 
+                            `<span class="px-1.5 py-0.5 rounded text-[10px] border border-zinc-700 text-zinc-300 flex items-center gap-1 inline-flex"><span class="w-2 h-2 rounded-full inline-block" style="background:${v}"></span>${v}</span>`
+                        ).join(' ');
+                    }
+
+                    let imgHtml = "Sem imagem";
+                    if (dados.playerImage) {
+                        imgHtml = `<img src="${dados.playerImage}" class="w-20 h-12 object-cover rounded border border-zinc-800 cursor-pointer hover:scale-150 transition origin-left" onclick="const w = window.open(''); w.document.write('<img src=\\'${dados.playerImage}\\' style=\\'max-width:100%; background:#000;\\'>');">`;
+                    }
+
+                    const tr = document.createElement('tr');
+                    tr.className = "border-b border-zinc-900 hover:bg-zinc-900/55 transition align-middle";
+                    tr.innerHTML = `
+                        <td class="px-6 py-4"><span class="font-bold text-white">${dados.appName || 'Sem Nome'}</span><br><span class="text-xs text-zinc-400">${dados.appContact || ''}</span></td>
+                        <td class="px-6 py-4"><div class="flex flex-wrap gap-1 items-center text-xs font-mono">${coresHtml}</div></td>
+                        <td class="px-6 py-4"><span class="text-blue-400 font-semibold">${dados.planoSelecionado || 'Plano'}</span><br><span class="text-xs text-emerald-400 font-bold">${dados.resumoTotal || ''}</span></td>
+                        <td class="px-6 py-4">${imgHtml}</td>
+                        <td class="px-6 py-4 text-zinc-500 text-xs">${dataCriacao}</td>
+                        <td class="px-6 py-4 text-right" id="pedido-acoes-${idDoc}"></td>
+                    `;
+
+                    if (tabelaPedidos) tabelaPedidos.appendChild(tr);
+
+                    const acoesTd = document.getElementById(`pedido-acoes-${idDoc}`);
+                    if (acoesTd) {
+                        const bDel = document.createElement('button');
+                        bDel.className = 'bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white border border-red-600/30 px-3 py-1.5 rounded-lg text-xs font-semibold transition';
+                        bDel.textContent = 'Excluir';
+                        bDel.onclick = async () => {
+                            if (confirm(`Deseja apagar este pedido de "${dados.appName}"?`)) {
+                                await deleteDoc(doc(db, "projetos_clientes", idDoc));
+                                alert('Pedido removido com sucesso!');
+                                carregarPedidosOrcamentos();
+                            }
+                        };
+                        acoesTd.append(bDel);
+                    }
+                });
+
+                if (totalPedidos) totalPedidos.innerText = `${contador} pedidos`;
+
+                if (contador === 0 && tabelaPedidos) {
+                    tabelaPedidos.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-zinc-500">Nenhum pedido recebido.</td></tr>';
+                }
+
+            } catch (error) {
+                console.error("Erro ao carregar projetos:", error);
+                if (tabelaPedidos) tabelaPedidos.innerHTML = '<tr><td colspan="6" class="text-center py-6 text-red-500">Erro ao carregar pedidos.</td></tr>';
+            }
+        }
+
+        async function carregarMensagemPlayerAtual() {
+            try {
+                const docRef = doc(db, "configuracoes", "aviso_player");
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const dados = docSnap.data();
+                    document.getElementById('mensagemPlayerInput').value = dados.mensagem || '';
+                    document.getElementById('tituloPlayerInput').value = dados.titulo || 'Aviso Importante';
+                    if (dados.imagem) {
+                        imagemBase64Atual = dados.imagem;
+                        const preview = document.getElementById('previewImagem');
+                        preview.src = dados.imagem;
+                        preview.classList.remove('hidden');
+                    }
+                }
+            } catch (e) {
+                console.error("Erro ao buscar mensagem:", e);
+            }
+        }
+
+        window.processarImagem = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const esc = Math.min(1, 800 / Math.max(img.width, img.height));
+                    const c = document.createElement('canvas');
+                    c.width = Math.round(img.width * esc);
+                    c.height = Math.round(img.height * esc);
+                    const ctx = c.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, c.width, c.height);
+                    ctx.drawImage(img, 0, 0, c.width, c.height);
+                    imagemBase64Atual = c.toDataURL('image/jpeg', 0.7);
+                    const preview = document.getElementById('previewImagem');
+                    preview.src = imagemBase64Atual;
+                    preview.classList.remove('hidden');
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        };
+
+        window.removerImagem = () => {
+            imagemBase64Atual = "";
+            document.getElementById('inputImagem').value = "";
+            const preview = document.getElementById('previewImagem');
+            preview.src = "";
+            preview.classList.add('hidden');
+        };
+
+        window.entrar = async () => {
+            const email = document.getElementById('loginEmail').value.trim();
+            const senha = document.getElementById('loginSenha').value;
+            const erro = document.getElementById('loginErro');
+            erro.textContent = '';
+            if (!email || !senha) { erro.textContent = 'Preencha e-mail e senha.'; return; }
+            try {
+                await signInWithEmailAndPassword(auth, email, senha);
+            } catch (e) {
+                erro.textContent = 'E-mail ou senha incorretos.';
+            }
+        };
+
+        window.sair = () => signOut(auth);
+
+        onAuthStateChanged(auth, (user) => {
+            const tela = document.getElementById('telaLogin');
+            const painel = document.getElementById('conteudoPainel');
+            if (user) {
+                tela.classList.add('hidden');
+                painel.classList.remove('hidden');
+                carregarClientes();
+                carregarPedidosOrcamentos();
+                carregarMensagemPlayerAtual();
+            } else {
+                painel.classList.add('hidden');
+                tela.classList.remove('hidden');
+            }
+        });
+    </script>
+</head>
+<body class="bg-black text-white min-h-screen p-6">
+
+    <!-- Tela de Login -->
+    <div id="telaLogin" class="fixed inset-0 z-50 bg-black flex items-center justify-center p-4">
+        <div class="w-full max-w-sm bg-zinc-950 border border-zinc-800 rounded-2xl p-8 space-y-5">
+            <div class="text-center space-y-1">
+                <h1 class="text-2xl font-extrabold text-blue-500">Painel Master</h1>
+                <p class="text-sm text-zinc-400">Acesso restrito</p>
+            </div>
+            <input type="email" id="loginEmail" placeholder="E-mail" autocomplete="username"
+                class="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition">
+            <input type="password" id="loginSenha" placeholder="Senha" autocomplete="current-password"
+                class="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition">
+            <button onclick="entrar()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 transition">Entrar</button>
+            <p id="loginErro" class="text-xs text-red-400 text-center min-h-[1rem]"></p>
+        </div>
+    </div>
+
+    <!-- Conteúdo Principal do Painel -->
+    <div id="conteudoPainel" class="hidden max-w-6xl mx-auto space-y-6">
+        
+        <!-- Cabeçalho -->
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-zinc-950 border border-zinc-800 p-6 rounded-2xl shadow-xl">
+            <div>
+                <h1 class="text-2xl font-extrabold text-blue-500">Painel Master - NextGen TV</h1>
+                <p class="text-sm text-zinc-400">Gestão de Clientes, Vencimentos e Acessos</p>
+            </div>
+            <div class="flex items-center gap-3 flex-wrap">
+                <a href="https://painelplus.site/#/dashboar" target="_blank" rel="noopener" class="bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-600/30 px-4 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5">
+                    🌐 Ir para o Painel
+                </a>
+                <button onclick="location.reload()" class="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 px-4 py-2 rounded-xl text-xs font-semibold transition">
+                    Atualizar Painel
+                </button>
+                <button onclick="sair()" class="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 px-4 py-2 rounded-xl text-xs font-semibold transition">
+                    Sair
+                </button>
+            </div>
+        </div>
+
+        <!-- Gestão e Cadastro de Clientes -->
+        <div class="bg-zinc-950 border border-emerald-600/30 rounded-2xl p-6 shadow-xl space-y-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                    Cadastro de Clientes, Credenciais e Prazos
+                </h2>
+                <span id="totalClientes" class="text-xs bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 px-3 py-1 rounded-full font-mono">0 clientes</span>
+            </div>
+
+            <!-- Formulário Novo Cliente -->
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-3 bg-black/40 p-4 rounded-xl border border-zinc-900 items-end">
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">Nome</label>
+                    <input type="text" id="novoNomeCliente" placeholder="Nome do Cliente" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500 transition">
+                </div>
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">WhatsApp</label>
+                    <input type="text" id="novoZapCliente" placeholder="51999999999" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500 transition">
+                </div>
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">Usuário</label>
+                    <input type="text" id="novoUsuarioCliente" placeholder="Usuário IPTV" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500 transition font-mono">
+                </div>
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">Senha</label>
+                    <input type="text" id="novoSenhaCliente" placeholder="Senha IPTV" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500 transition font-mono">
+                </div>
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">Plano</label>
+                    <select id="novoPlanoCliente" class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition">
+                        <option value="0.5|Teste 12h">⚡ Teste 12h</option>
+                        <option value="30|30 Dias (Mensal)" selected>📅 30 Dias (Mensal)</option>
+                        <option value="90|90 Dias (Trimestral)">🗓️ 90 Dias (Trimestral)</option>
+                        <option value="365|365 Dias (Anual)">⭐ Anual (365 Dias)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="flex justify-end">
+                <button onclick="salvarNovoCliente()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-6 py-3 rounded-xl text-xs shadow-lg transition">
+                    + Cadastrar Novo Cliente
+                </button>
+            </div>
+
+            <!-- Tabela de Clientes -->
+            <div class="overflow-x-auto border border-zinc-900 rounded-xl">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-zinc-900/80 text-zinc-400 uppercase text-xs tracking-wider border-b border-zinc-800">
+                        <tr>
+                            <th class="px-6 py-4">Nome</th>
+                            <th class="px-6 py-4">WhatsApp</th>
+                            <th class="px-6 py-4">Credenciais</th>
+                            <th class="px-6 py-4">Plano</th>
+                            <th class="px-6 py-4">Tempo Restante</th>
+                            <th class="px-6 py-4 text-right">Ações (Wpp / App / Outros)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabelaClientesCorpo">
+                        <!-- Clientes entram aqui -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Bloco de Mensagem Geral para o App (Broadcast) -->
+        <div class="bg-zinc-950 border border-blue-600/30 rounded-2xl p-6 shadow-xl space-y-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></span>
+                    Mensagem Geral para Todos os Apps (Broadcast)
+                </h2>
+                <span class="text-xs text-blue-400">Envia para o painel de avisos de todos os clientes</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="md:col-span-1">
+                    <label class="text-xs text-zinc-400 mb-1 block">Título</label>
+                    <input type="text" id="tituloPlayerInput" placeholder="Ex: Aviso Geral" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition">
+                </div>
+                <div class="md:col-span-3">
+                    <label class="text-xs text-zinc-400 mb-1 block">Mensagem Geral</label>
+                    <input type="text" id="mensagemPlayerInput" placeholder="Ex: Novos filmes disponíveis..." 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition">
+                </div>
+            </div>
+            <div class="space-y-2 pt-2 border-t border-zinc-900">
+                <label class="text-xs text-zinc-400 block">Anexar Imagem (Opcional)</label>
+                <div class="flex items-center gap-4">
+                    <input type="file" id="inputImagem" accept="image/*" onchange="processarImagem(event)"
+                        class="block w-full text-xs text-zinc-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-600/20 file:text-blue-400 hover:file:bg-blue-600/30 cursor-pointer">
+                    <button onclick="removerImagem()" class="bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700 px-3 py-2 rounded-xl text-xs transition shrink-0">
+                        Remover Imagem
+                    </button>
+                </div>
+                <div class="mt-2">
+                    <img id="previewImagem" class="hidden max-h-40 rounded-xl border border-zinc-800 object-contain shadow-md" alt="Pré-visualização">
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 pt-4 border-t border-zinc-900">
+                <button onclick="desativarNoPlayer()" class="bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700 px-4 py-2 rounded-xl text-xs font-semibold transition">
+                    Desativar Mensagem Geral
+                </button>
+                <button onclick="enviarParaPlayer()" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-2 rounded-xl text-xs shadow-lg transition">
+                    🚀 Enviar Mensagem Geral para Todos
+                </button>
+            </div>
+        </div>
+
+        <!-- Pedidos e Orçamentos Recebidos -->
+        <div class="bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
+            <div class="p-4 border-b border-zinc-900 flex justify-between items-center">
+                <span class="font-bold text-sm text-zinc-300 flex items-center gap-2">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                    Pedidos e Orçamentos Recebidos (Personalização de Players)
+                </span>
+                <span id="totalPedidos" class="text-xs bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 px-3 py-1 rounded-full font-mono">0 pedidos</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-zinc-900/80 text-zinc-400 uppercase text-xs tracking-wider border-b border-zinc-800">
+                        <tr>
+                            <th class="px-6 py-4">App / Rodapé</th>
+                            <th class="px-6 py-4">Cores Hexadecimais</th>
+                            <th class="px-6 py-4">Plano & Valores</th>
+                            <th class="px-6 py-4">Preview Player</th>
+                            <th class="px-6 py-4">Data</th>
+                            <th class="px-6 py-4 text-right">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabelaPedidosCorpo">
+                        <!-- Pedidos do Firebase -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- MODAL PARA ENVIAR MENSAGEM INTERNA PARA O APP DO CLIENTE -->
+    <div id="modalMensagemIndividual" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-6 space-y-4 shadow-2xl">
+            <h3 id="tituloMsgIndividual" class="text-lg font-bold text-white">Enviar Mensagem Interna</h3>
+            <p class="text-xs text-zinc-400">Esta mensagem aparecerá diretamente no aplicativo deste cliente.</p>
+            
+            <div>
+                <textarea id="inputTextoIndividual" rows="4" placeholder="Digite a mensagem para o app do cliente..." 
+                    class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition"></textarea>
+            </div>
+
+            <div class="flex flex-col gap-2 pt-2">
+                <button onclick="enviarMensagemIndividualApp()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl text-xs transition shadow-lg shadow-blue-600/20">
+                    📱 Enviar para o App
+                </button>
+                <button onclick="fecharModalMensagemIndividual()" class="w-full bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700 py-2 rounded-xl text-xs transition">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL PARA EDITAR CLIENTE -->
+    <div id="modalEditarCliente" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-6 space-y-4 shadow-2xl">
+            <h3 class="text-lg font-bold text-white">Editar Dados do Cliente</h3>
+            <input type="hidden" id="editWhatsappOriginal">
+            
+            <div class="space-y-3">
+                <div>
+                    <label class="text-xs text-zinc-400 block mb-1">Nome</label>
+                    <input type="text" id="editNomeCliente" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-blue-500 transition">
+                </div>
+                <div>
+                    <label class="text-xs text-zinc-400 block mb-1">WhatsApp</label>
+                    <input type="text" id="editZapCliente" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-blue-500 transition">
+                </div>
+                <div>
+                    <label class="text-xs text-zinc-400 block mb-1">Usuário</label>
+                    <input type="text" id="editUsuarioCliente" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-blue-500 transition font-mono">
+                </div>
+                <div>
+                    <label class="text-xs text-zinc-400 block mb-1">Senha</label>
+                    <input type="text" id="editSenhaCliente" 
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-blue-500 transition font-mono">
+                </div>
+                <div>
+                    <label class="text-xs text-zinc-400 block mb-1">Plano</label>
+                    <select id="editPlanoCliente" class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-blue-500 transition">
+                        <option value="0.5|Teste 12h">⚡ Teste 12h</option>
+                        <option value="30|30 Dias (Mensal)">📅 30 Dias (Mensal)</option>
+                        <option value="90|90 Dias (Trimestral)">🗓️ 90 Dias (Trimestral)</option>
+                        <option value="365|365 Dias (Anual)">⭐ Anual (365 Dias)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="flex flex-col gap-2 pt-3">
+                <button onclick="salvarEdicaoCliente()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl text-xs transition shadow-lg shadow-blue-600/20">
+                    💾 Salvar Alterações
+                </button>
+                <button onclick="fecharModalEditar()" class="w-full bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-700 py-2 rounded-xl text-xs transition">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
