@@ -456,6 +456,254 @@
             preview.classList.add('hidden');
         };
 
+        // ================= PROMOÇÕES E SORTEIO =================
+        let promosCache = [];
+        let participantesCache = [];
+        let promoAberta = null;
+        let sorteando = false;
+
+        const escHtml = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        const fmtDataBR = (s) => s ? s.split('-').reverse().join('/') : '-';
+        const hojeISO = (add = 0) => {
+            const d = new Date();
+            d.setDate(d.getDate() + add);
+            return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        };
+
+        async function carregarPromocoes() {
+            const lista = document.getElementById('listaPromocoes');
+            if (!lista) return;
+            try {
+                const [pSnap, partSnap] = await Promise.all([
+                    getDocs(collection(db, 'promocoes')),
+                    getDocs(collection(db, 'participantes_promocao'))
+                ]);
+                promosCache = [];
+                pSnap.forEach((d) => promosCache.push({ id: d.id, ...d.data() }));
+                promosCache.sort((a, b) => (b.criadaEm?.seconds || 0) - (a.criadaEm?.seconds || 0));
+                participantesCache = [];
+                partSnap.forEach((d) => participantesCache.push({ id: d.id, ...d.data() }));
+
+                if (promosCache.length === 0) {
+                    lista.innerHTML = '<p class="text-center text-zinc-500 text-sm py-4">Nenhuma promoção criada ainda.</p>';
+                    return;
+                }
+
+                const estilos = {
+                    ativa: ['Ativa', 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30'],
+                    sorteada: ['Sorteada', 'bg-amber-600/20 text-amber-400 border-amber-600/30'],
+                    encerrada: ['Encerrada', 'bg-zinc-800 text-zinc-400 border-zinc-700']
+                };
+
+                lista.innerHTML = promosCache.map((p) => {
+                    const qtd = participantesCache.filter((x) => x.promoId === p.id).length;
+                    const st = estilos[p.status] || estilos.encerrada;
+                    const venc = (p.vencedores || []).length;
+                    return `
+                    <div class="bg-black/40 border border-zinc-900 rounded-xl p-4 space-y-3">
+                        <div class="flex items-start justify-between gap-3 flex-wrap">
+                            <div class="min-w-0">
+                                <p class="font-bold text-white text-sm">${escHtml(p.titulo)}</p>
+                                <p class="text-xs text-amber-400">🏆 ${escHtml(p.premio)}</p>
+                                <p class="text-[11px] text-zinc-500 mt-1">📅 ${fmtDataBR(p.dataInicio)} a ${fmtDataBR(p.dataFim)}</p>
+                            </div>
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span class="text-[11px] border px-3 py-1 rounded-full font-semibold ${st[1]}">${st[0]}</span>
+                                <span class="text-[11px] bg-blue-600/20 text-blue-400 border border-blue-600/30 px-3 py-1 rounded-full font-mono">${qtd} participante(s)</span>
+                                ${venc ? `<span class="text-[11px] bg-amber-600/20 text-amber-400 border border-amber-600/30 px-3 py-1 rounded-full font-mono">${venc} sorteio(s)</span>` : ''}
+                            </div>
+                        </div>
+                        <div class="flex gap-2 flex-wrap justify-end">
+                            <button onclick="abrirSorteio('${p.id}')" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-4 py-2 rounded-xl text-xs transition">🎲 Participantes / Sorteio</button>
+                            ${p.status === 'ativa' ? `<button onclick="encerrarPromocao('${p.id}')" class="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 px-4 py-2 rounded-xl text-xs transition">Encerrar inscrições</button>` : ''}
+                            <button onclick="excluirPromocao('${p.id}')" class="bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white border border-red-600/30 px-4 py-2 rounded-xl text-xs transition">Excluir</button>
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                console.error('Erro ao carregar promoções:', e);
+                lista.innerHTML = '<p class="text-center text-red-500 text-sm py-4">Erro ao carregar promoções. Verifique as regras do Firestore.</p>';
+            }
+        }
+
+        window.publicarPromocao = async () => {
+            const titulo = document.getElementById('promoTitulo').value.trim();
+            const premio = document.getElementById('promoPremio').value.trim();
+            const descricao = document.getElementById('promoDescricao').value.trim();
+            const ini = document.getElementById('promoInicio').value;
+            const fim = document.getElementById('promoFim').value;
+
+            if (!titulo || !premio || !ini || !fim) { alert('Preencha título, prêmio e as datas.'); return; }
+            if (fim < ini) { alert('A data final não pode ser antes da data inicial.'); return; }
+
+            try {
+                const ativas = promosCache.filter((p) => p.status === 'ativa');
+                if (ativas.length > 0) {
+                    if (!confirm('Já existe uma promoção ativa. Encerrar a anterior e publicar esta nova?')) return;
+                    for (const a of ativas) await updateDoc(doc(db, 'promocoes', a.id), { status: 'encerrada' });
+                }
+                await addDoc(collection(db, 'promocoes'), {
+                    titulo, premio, descricao,
+                    dataInicio: ini, dataFim: fim,
+                    status: 'ativa',
+                    vencedores: [],
+                    criadaEm: serverTimestamp()
+                });
+                document.getElementById('promoTitulo').value = '';
+                document.getElementById('promoPremio').value = '';
+                document.getElementById('promoDescricao').value = '';
+                alert('Promoção publicada! Os clientes serão avisados no app.');
+                carregarPromocoes();
+            } catch (e) {
+                console.error(e);
+                alert('Erro ao publicar a promoção: ' + e.message);
+            }
+        };
+
+        window.encerrarPromocao = async (id) => {
+            if (!confirm('Encerrar as inscrições desta promoção? Ela some do app dos clientes.')) return;
+            try {
+                await updateDoc(doc(db, 'promocoes', id), { status: 'encerrada' });
+                carregarPromocoes();
+            } catch (e) { alert('Erro: ' + e.message); }
+        };
+
+        window.excluirPromocao = async (id) => {
+            if (!confirm('Excluir esta promoção e TODOS os participantes dela? Não dá para desfazer.')) return;
+            try {
+                const parts = participantesCache.filter((x) => x.promoId === id);
+                for (const x of parts) {
+                    await deleteDoc(doc(db, 'promocoes', id, 'numeros', String(x.numero)));
+                    await deleteDoc(doc(db, 'participantes_promocao', x.id));
+                }
+                await deleteDoc(doc(db, 'promocoes', id));
+                carregarPromocoes();
+            } catch (e) { alert('Erro ao excluir: ' + e.message); }
+        };
+
+        window.abrirSorteio = (id) => {
+            promoAberta = id;
+            document.getElementById('sorteioDisplay').textContent = '----';
+            document.getElementById('sorteioResultado').classList.add('hidden');
+            renderSorteio();
+            document.getElementById('modalSorteio').classList.remove('hidden');
+        };
+
+        window.fecharSorteio = () => {
+            if (sorteando) return;
+            document.getElementById('modalSorteio').classList.add('hidden');
+            promoAberta = null;
+        };
+
+        function renderSorteio() {
+            const p = promosCache.find((x) => x.id === promoAberta);
+            if (!p) return;
+            const parts = participantesCache
+                .filter((x) => x.promoId === p.id)
+                .sort((a, b) => a.numero - b.numero);
+            const vencedores = p.vencedores || [];
+
+            document.getElementById('sorteioTitulo').textContent = p.titulo + ' — ' + p.premio;
+            document.getElementById('sorteioContagem').textContent = parts.length + ' participante(s)';
+
+            document.getElementById('listaSorteados').innerHTML = vencedores.length
+                ? '<p class="text-xs text-zinc-400 mb-2">Já sorteados:</p>' + vencedores.map((v, i) => `
+                    <div class="flex items-center justify-between gap-2 bg-amber-600/10 border border-amber-600/30 rounded-xl px-3 py-2 mb-2">
+                        <span class="text-sm text-amber-300">#${i + 1} — <b class="font-mono">${v.numero}</b> · ${escHtml(v.nome)} · ${escHtml(v.telefone)}</span>
+                        <button onclick="avisarVencedor(${i})" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1 rounded-lg text-[11px] transition">💬 WhatsApp</button>
+                    </div>`).join('')
+                : '';
+
+            document.getElementById('listaParticipantes').innerHTML = parts.length
+                ? parts.map((x) => `
+                    <tr class="border-b border-zinc-900">
+                        <td class="px-4 py-2 font-mono font-bold text-amber-400">${x.numero}</td>
+                        <td class="px-4 py-2">${escHtml(x.nome)}</td>
+                        <td class="px-4 py-2 font-mono text-zinc-400">${escHtml(x.telefone)}</td>
+                        <td class="px-4 py-2 text-right"><button onclick="removerParticipante('${x.id}','${p.id}',${x.numero})" class="text-red-400 hover:text-red-300 text-xs">remover</button></td>
+                    </tr>`).join('')
+                : '<tr><td colspan="4" class="text-center py-6 text-zinc-500 text-sm">Ninguém participou ainda.</td></tr>';
+        }
+
+        window.sortear = async () => {
+            if (sorteando) return;
+            const p = promosCache.find((x) => x.id === promoAberta);
+            if (!p) return;
+
+            const vencedores = p.vencedores || [];
+            const jaSorteados = new Set(vencedores.map((v) => v.numero));
+            const pool = participantesCache.filter((x) => x.promoId === p.id && !jaSorteados.has(x.numero));
+            if (pool.length === 0) { alert('Não há participantes disponíveis para sortear.'); return; }
+
+            if (p.status === 'ativa' && !confirm('Sortear agora encerra as inscrições desta promoção. Continuar?')) return;
+
+            sorteando = true;
+            const btn = document.getElementById('btnSortear');
+            const display = document.getElementById('sorteioDisplay');
+            const resultado = document.getElementById('sorteioResultado');
+            btn.disabled = true;
+            btn.classList.add('opacity-50');
+            resultado.classList.add('hidden');
+
+            // sorteio com gerador criptográfico do aparelho
+            const buf = new Uint32Array(1);
+            crypto.getRandomValues(buf);
+            const vencedor = pool[buf[0] % pool.length];
+
+            const timer = setInterval(() => {
+                display.textContent = pool[Math.floor(Math.random() * pool.length)].numero;
+            }, 70);
+            await new Promise((r) => setTimeout(r, 3500));
+            clearInterval(timer);
+            display.textContent = vencedor.numero;
+
+            try {
+                const novos = [...vencedores, {
+                    numero: vencedor.numero,
+                    nome: vencedor.nome,
+                    telefone: vencedor.telefone,
+                    sorteadoEm: new Date().toISOString()
+                }];
+                await updateDoc(doc(db, 'promocoes', p.id), { vencedores: novos, status: 'sorteada' });
+                p.vencedores = novos;
+                p.status = 'sorteada';
+            } catch (e) {
+                console.error(e);
+                alert('O sorteio foi feito, mas não consegui salvar o resultado: ' + e.message + '\nAnote: nº ' + vencedor.numero + ' — ' + vencedor.nome);
+            }
+
+            resultado.innerHTML = `
+                <p class="text-xs text-amber-300">🎉 Vencedor(a)</p>
+                <p class="text-xl font-extrabold text-white">${escHtml(vencedor.nome)}</p>
+                <p class="text-sm text-zinc-300 font-mono">${escHtml(vencedor.telefone)}</p>`;
+            resultado.classList.remove('hidden');
+
+            sorteando = false;
+            btn.disabled = false;
+            btn.classList.remove('opacity-50');
+            carregarPromocoes().then(renderSorteio);
+        };
+
+        window.avisarVencedor = (i) => {
+            const p = promosCache.find((x) => x.id === promoAberta);
+            const v = p && (p.vencedores || [])[i];
+            if (!v) return;
+            const tel = String(v.telefone).replace(/\D/g, '');
+            const texto = `🎉 Parabéns, ${v.nome}!\n\nVocê foi sorteado(a) na promoção *${p.titulo}* com o número *${v.numero}*.\n🏆 Prêmio: ${p.premio}\n\nNos chame aqui para combinar a entrega do prêmio!`;
+            window.open(`https://api.whatsapp.com/send?phone=55${tel}&text=${encodeURIComponent(texto)}`, '_blank');
+        };
+
+        window.removerParticipante = async (partId, promoId, numero) => {
+            if (!confirm('Remover este participante da promoção?')) return;
+            try {
+                await deleteDoc(doc(db, 'promocoes', promoId, 'numeros', String(numero)));
+                await deleteDoc(doc(db, 'participantes_promocao', partId));
+                participantesCache = participantesCache.filter((x) => x.id !== partId);
+                renderSorteio();
+                carregarPromocoes();
+            } catch (e) { alert('Erro ao remover: ' + e.message); }
+        };
+
         window.entrar = async () => {
             const email = document.getElementById('loginEmail').value.trim();
             const senha = document.getElementById('loginSenha').value;
@@ -480,6 +728,9 @@
                 carregarClientes();
                 carregarPedidosOrcamentos();
                 carregarMensagemPlayerAtual();
+                document.getElementById('promoInicio').value = hojeISO(0);
+                document.getElementById('promoFim').value = hojeISO(4);
+                carregarPromocoes();
             } else {
                 painel.classList.add('hidden');
                 tela.classList.remove('hidden');
@@ -640,6 +891,54 @@
             </div>
         </div>
 
+        <!-- Promoções e Sorteios -->
+        <div class="bg-zinc-950 border border-amber-500/30 rounded-2xl p-6 shadow-xl space-y-4">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+                    🎁 Promoções e Sorteios
+                </h2>
+                <span class="text-xs text-amber-400">O cliente é avisado no app e recebe um número ao participar</span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 bg-black/40 p-4 rounded-xl border border-zinc-900">
+                <div class="md:col-span-2">
+                    <label class="text-[11px] text-zinc-400 block mb-1">Título da promoção</label>
+                    <input type="text" id="promoTitulo" placeholder="Ex: Sorteio de Outubro"
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="text-[11px] text-zinc-400 block mb-1">Prêmio</label>
+                    <input type="text" id="promoPremio" placeholder="Ex: 3 meses grátis de plano"
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div class="md:col-span-4">
+                    <label class="text-[11px] text-zinc-400 block mb-1">Descrição / regras (opcional)</label>
+                    <textarea id="promoDescricao" rows="2" placeholder="Ex: Cadastre-se e concorra. O sorteio será feito ao vivo."
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 transition"></textarea>
+                </div>
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">Inscrições a partir de</label>
+                    <input type="date" id="promoInicio"
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div>
+                    <label class="text-[11px] text-zinc-400 block mb-1">Inscrições até</label>
+                    <input type="date" id="promoFim"
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-amber-500 transition">
+                </div>
+                <div class="md:col-span-2 flex items-end justify-end">
+                    <button onclick="publicarPromocao()" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-6 py-3 rounded-xl text-xs shadow-lg transition">
+                        🚀 Publicar Promoção para os Clientes
+                    </button>
+                </div>
+            </div>
+
+            <div id="listaPromocoes" class="space-y-3">
+                <p class="text-center text-zinc-500 text-sm py-4">A carregar promoções...</p>
+            </div>
+        </div>
+
         <!-- Pedidos e Orçamentos Recebidos -->
         <div class="bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
             <div class="p-4 border-b border-zinc-900 flex justify-between items-center">
@@ -668,6 +967,44 @@
             </div>
         </div>
 
+    </div>
+
+    <!-- MODAL: PARTICIPANTES E SORTEADOR -->
+    <div id="modalSorteio" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="w-full max-w-2xl max-h-[92vh] overflow-y-auto bg-zinc-950 border border-amber-500/30 rounded-2xl p-6 space-y-4 shadow-2xl">
+            <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                    <h3 id="sorteioTitulo" class="text-lg font-bold text-white">Sorteio</h3>
+                    <p id="sorteioContagem" class="text-xs text-amber-400">0 participante(s)</p>
+                </div>
+                <button onclick="fecharSorteio()" class="text-zinc-400 hover:text-white text-xl leading-none px-2">✕</button>
+            </div>
+
+            <div class="bg-black border border-zinc-800 rounded-2xl p-6 text-center space-y-3">
+                <p class="text-[11px] text-zinc-500 uppercase tracking-widest">Número sorteado</p>
+                <p id="sorteioDisplay" class="text-6xl font-extrabold font-mono text-amber-400 tracking-widest">----</p>
+                <div id="sorteioResultado" class="hidden space-y-1"></div>
+                <button id="btnSortear" onclick="sortear()" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-8 py-3 rounded-xl text-sm shadow-lg transition">
+                    🎲 Sortear agora
+                </button>
+            </div>
+
+            <div id="listaSorteados"></div>
+
+            <div class="overflow-x-auto border border-zinc-900 rounded-xl">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-zinc-900/80 text-zinc-400 uppercase text-xs tracking-wider border-b border-zinc-800">
+                        <tr>
+                            <th class="px-4 py-3">Nº</th>
+                            <th class="px-4 py-3">Nome</th>
+                            <th class="px-4 py-3">WhatsApp</th>
+                            <th class="px-4 py-3"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="listaParticipantes"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- MODAL PARA ENVIAR MENSAGEM INTERNA PARA O APP DO CLIENTE -->
