@@ -197,15 +197,48 @@
         window.abrirModalMensagemIndividual = (whatsappKey, nomeCliente) => {
             clienteZapAtualMsg = whatsappKey;
             document.getElementById('tituloMsgIndividual').innerText = `Enviar Mensagem Interna para: ${nomeCliente}`;
+            document.getElementById('inputTituloIndividual').value = "";
             document.getElementById('inputTextoIndividual').value = "";
             document.getElementById('modalMensagemIndividual').classList.remove('hidden');
+            carregarHistoricoMsgs();
         };
 
         window.fecharModalMensagemIndividual = () => {
             document.getElementById('modalMensagemIndividual').classList.add('hidden');
         };
 
+        async function carregarHistoricoMsgs() {
+            const box = document.getElementById('listaMsgsIndividual');
+            box.innerHTML = '<p class="text-[11px] text-zinc-500">A carregar...</p>';
+            try {
+                const snap = await getDocs(collection(db, "clientes", clienteZapAtualMsg, "mensagens_app"));
+                const msgs = [];
+                snap.forEach((d) => msgs.push({ id: d.id, ...d.data() }));
+                msgs.sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+                box.innerHTML = msgs.length ? msgs.slice(0, 15).map((m) => `
+                    <div class="flex items-start justify-between gap-2 bg-black border border-zinc-900 rounded-lg px-3 py-2">
+                        <div class="min-w-0">
+                            <p class="text-[11px] text-zinc-500">${m.data ? new Date(m.data).toLocaleString('pt-BR') : ''} · ${escHtml(m.titulo || '')}</p>
+                            <p class="text-xs text-zinc-200 break-words">${escHtml(m.mensagem)}</p>
+                        </div>
+                        <button onclick="apagarMensagemIndividual('${m.id}')" class="text-red-400 hover:text-red-300 text-[11px] shrink-0">apagar</button>
+                    </div>`).join('') : '<p class="text-[11px] text-zinc-500">Nenhuma mensagem enviada ainda.</p>';
+            } catch (e) {
+                console.error(e);
+                box.innerHTML = '<p class="text-[11px] text-red-400">Não foi possível carregar o histórico. Confira as regras do Firestore.</p>';
+            }
+        }
+
+        window.apagarMensagemIndividual = async (id) => {
+            if (!confirm('Apagar esta mensagem do app do cliente?')) return;
+            try {
+                await deleteDoc(doc(db, "clientes", clienteZapAtualMsg, "mensagens_app", id));
+                carregarHistoricoMsgs();
+            } catch (e) { alert('Erro ao apagar: ' + e.message); }
+        };
+
         window.enviarMensagemIndividualApp = async () => {
+            const titulo = document.getElementById('inputTituloIndividual').value.trim();
             const texto = document.getElementById('inputTextoIndividual').value.trim();
             if (!texto) {
                 alert("Digite uma mensagem!");
@@ -213,19 +246,20 @@
             }
 
             try {
-                // Salvamos na subcoleção de mensagens do cliente específico no Firestore
                 await addDoc(collection(db, "clientes", clienteZapAtualMsg, "mensagens_app"), {
-                    titulo: "Mensagem do Suporte",
+                    titulo: titulo || "Mensagem do Suporte",
                     mensagem: texto,
                     data: new Date().toISOString(),
                     lida: false
                 });
 
-                alert("Mensagem enviada com sucesso para o app do cliente!");
-                fecharModalMensagemIndividual();
+                alert("Mensagem enviada! O cliente será avisado no celular.");
+                document.getElementById('inputTituloIndividual').value = "";
+                document.getElementById('inputTextoIndividual').value = "";
+                carregarHistoricoMsgs();
             } catch (e) {
                 console.error("Erro ao enviar mensagem interna:", e);
-                alert("Erro ao enviar mensagem.");
+                alert("Erro ao enviar mensagem: " + e.message + "\n\nSe aparecer 'permission-denied', atualize as regras do Firestore.");
             }
         };
 
@@ -256,6 +290,28 @@
         };
 
         // ================= EDIÇÃO E EXCLUSÃO =================
+        const calcDiasRestantes = (dados) => {
+            if (!dados || !dados.dataCadastro || dados.diasValidade === undefined) return 0;
+            const ms = new Date(dados.dataCadastro).getTime() + dados.diasValidade * 86400000 - Date.now();
+            return Math.max(0, Math.ceil(ms / 86400000));
+        };
+
+        window.atualizarInfoVenc = () => {
+            const v = parseInt(document.getElementById('editDiasRestantes').value, 10);
+            const info = document.getElementById('editVencInfo');
+            if (isNaN(v) || v < 0) { info.textContent = ''; return; }
+            if (v === 0) { info.textContent = 'O plano ficará expirado.'; return; }
+            const d = new Date(Date.now() + v * 86400000);
+            info.textContent = 'Vence em ' + d.toLocaleDateString('pt-BR') + '.';
+        };
+
+        window.ajustarDiasRestantes = (n) => {
+            const campo = document.getElementById('editDiasRestantes');
+            if (n === 'zero') { campo.value = 0; }
+            else { campo.value = (parseInt(campo.value, 10) || 0) + n; }
+            atualizarInfoVenc();
+        };
+
         window.abrirModalEditar = (whatsappKey, dados) => {
             document.getElementById('editWhatsappOriginal').value = whatsappKey;
             document.getElementById('editNomeCliente').value = dados.nome || '';
@@ -263,7 +319,13 @@
             document.getElementById('editUsuarioCliente').value = dados.usuario || '';
             document.getElementById('editSenhaCliente').value = dados.senha || '';
             document.getElementById('editPlanoCliente').value = dados.diasValidade ? `${dados.diasValidade}|${dados.nomePlano || 'Personalizado'}` : '30|30 Dias (Mensal)';
-            
+
+            const rest = calcDiasRestantes(dados);
+            document.getElementById('editDiasRestantes').value = rest;
+            document.getElementById('editRestOrig').value = rest;
+            document.getElementById('editDataCadastroOrig').value = dados.dataCadastro || '';
+            atualizarInfoVenc();
+
             document.getElementById('modalEditarCliente').classList.remove('hidden');
         };
 
@@ -285,8 +347,20 @@
             }
 
             const partes = planoValor.split('|');
-            const diasValidade = parseFloat(partes[0]);
+            let diasValidade = parseFloat(partes[0]);
             const nomePlano = partes[1];
+
+            // dias restantes: se foi alterado, vale a partir de agora
+            const restOrig = parseInt(document.getElementById('editRestOrig').value, 10);
+            const restTxt = document.getElementById('editDiasRestantes').value;
+            const restNovo = parseInt(restTxt, 10);
+            const mudouDias = restTxt !== '' && !isNaN(restNovo) && restNovo >= 0 && restNovo !== restOrig;
+            const cadOrig = document.getElementById('editDataCadastroOrig').value;
+            let dataCadastro = cadOrig || new Date().toISOString();
+            if (mudouDias) {
+                diasValidade = restNovo;
+                dataCadastro = new Date().toISOString();
+            }
 
             try {
                 if (whatsappOriginal !== novoZap) {
@@ -297,21 +371,25 @@
                         senha: senha || "",
                         diasValidade: diasValidade,
                         nomePlano: nomePlano,
-                        dataCadastro: new Date().toISOString()
+                        dataCadastro: dataCadastro
                     });
                     await deleteDoc(doc(db, "clientes", whatsappOriginal));
                 } else {
-                    await updateDoc(doc(db, "clientes", whatsappOriginal), {
+                    const payload = {
                         nome: nome,
                         telefone: novoZap,
                         usuario: usuario || "",
                         senha: senha || "",
                         diasValidade: diasValidade,
                         nomePlano: nomePlano
-                    });
+                    };
+                    if (mudouDias) payload.dataCadastro = dataCadastro;
+                    await updateDoc(doc(db, "clientes", whatsappOriginal), payload);
                 }
 
-                alert("Cliente atualizado com sucesso!");
+                alert(mudouDias
+                    ? (restNovo === 0 ? "Cliente atualizado. O plano foi marcado como expirado." : "Cliente atualizado! Agora faltam " + restNovo + " dia(s) para vencer.")
+                    : "Cliente atualizado com sucesso!");
                 fecharModalEditar();
                 carregarClientes();
             } catch (error) {
@@ -1014,8 +1092,15 @@
             <p class="text-xs text-zinc-400">Esta mensagem aparecerá diretamente no aplicativo deste cliente.</p>
             
             <div>
+                <input type="text" id="inputTituloIndividual" maxlength="60" placeholder="Título (opcional). Padrão: Mensagem do Suporte"
+                    class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition mb-2">
                 <textarea id="inputTextoIndividual" rows="4" placeholder="Digite a mensagem para o app do cliente..." 
                     class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition"></textarea>
+            </div>
+
+            <div>
+                <p class="text-[11px] text-zinc-400 mb-2">Mensagens já enviadas para este cliente</p>
+                <div id="listaMsgsIndividual" class="space-y-2 max-h-44 overflow-y-auto"></div>
             </div>
 
             <div class="flex flex-col gap-2 pt-2">
@@ -1064,6 +1149,20 @@
                         <option value="90|90 Dias (Trimestral)">🗓️ 90 Dias (Trimestral)</option>
                         <option value="365|365 Dias (Anual)">⭐ Anual (365 Dias)</option>
                     </select>
+                </div>
+                <div>
+                    <label class="text-xs text-zinc-400 block mb-1">Dias restantes <span class="text-zinc-500">(edite para ajustar o vencimento)</span></label>
+                    <input type="number" id="editDiasRestantes" min="0" step="1" oninput="atualizarInfoVenc()"
+                        class="w-full bg-black border border-zinc-800 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-blue-500 transition font-mono">
+                    <div class="flex gap-2 mt-2 flex-wrap">
+                        <button type="button" onclick="ajustarDiasRestantes(7)" class="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 px-3 py-1.5 rounded-lg text-xs">+7</button>
+                        <button type="button" onclick="ajustarDiasRestantes(30)" class="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 px-3 py-1.5 rounded-lg text-xs">+30</button>
+                        <button type="button" onclick="ajustarDiasRestantes(90)" class="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 px-3 py-1.5 rounded-lg text-xs">+90</button>
+                        <button type="button" onclick="ajustarDiasRestantes('zero')" class="bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white border border-red-600/30 px-3 py-1.5 rounded-lg text-xs">Expirar</button>
+                    </div>
+                    <p id="editVencInfo" class="text-[11px] text-zinc-500 mt-1"></p>
+                    <input type="hidden" id="editRestOrig">
+                    <input type="hidden" id="editDataCadastroOrig">
                 </div>
             </div>
 
